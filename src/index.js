@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { loadContentCache, getContent, getChannelUrl } from './content.js';
 import {
@@ -17,10 +18,88 @@ import {
 import { appendApplicationRow } from './sheets.js';
 import { getAiIntentReply } from './ai.js';
 
-const token = process.env.BOT_TOKEN;
+/** Replit/Render: убираем пробелы, переносы, кавычки и невидимые символы из Secret. */
+function normalizeBotToken(raw) {
+  let s = String(raw ?? '')
+    .replace(/^\uFEFF/, '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\u00A0/g, ' ')
+    .trim();
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  return s.replace(/\s/g, '');
+}
+
+function isPlausibleTelegramBotToken(t) {
+  const i = t.indexOf(':');
+  if (i < 1 || t.indexOf(':', i + 1) !== -1) return false;
+  const id = t.slice(0, i);
+  const secret = t.slice(i + 1);
+  return /^\d{5,20}$/.test(id) && secret.length >= 25 && !/\s/.test(secret) && !/["'`]/.test(secret);
+}
+
+const token = normalizeBotToken(process.env.BOT_TOKEN);
 if (!token) {
-  console.error('Задайте BOT_TOKEN в .env');
+  console.error('Задайте BOT_TOKEN в Secrets (Replit) или в .env');
   process.exit(1);
+}
+if (!isPlausibleTelegramBotToken(token)) {
+  console.error(
+    '[BOT_TOKEN] Неверный формат. Нужна одна строка вида 123456789:AAH... из @BotFather, без пробелов, кавычек и переносов. Имя секрета в Replit: BOT_TOKEN (заглавными).',
+  );
+  process.exit(1);
+}
+
+/** Порт для health check: Render/деплой задают PORT; на Replit иногда только REPL_ID — тогда 8080. */
+function resolveHealthCheckPort() {
+  const n = Number(process.env.PORT);
+  if (Number.isFinite(n) && n > 0) return n;
+  if (process.env.REPL_ID != null && String(process.env.REPL_ID).length > 0) {
+    const fb = Number(process.env.REPLIT_SERVER_PORT);
+    if (Number.isFinite(fb) && fb > 0) return fb;
+    return 8080;
+  }
+  return null;
+}
+
+function startHealthCheckServer(port) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
+      res.end('ok');
+    });
+    server.on('error', reject);
+    server.listen(port, '0.0.0.0', () => {
+      console.log(`[http] health check 0.0.0.0:${port}`);
+      resolve(server);
+    });
+  });
+}
+
+async function verifyTelegramBotToken(t) {
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${t}/getMe`);
+    const j = await r.json();
+    if (!j.ok) {
+      console.error('[telegram] Токен отклонён (getMe):', j.description || r.status);
+      console.error(
+        '[telegram] Что проверить: 1) В Replit Secrets ключ ровно BOT_TOKEN, значение — только токен из @BotFather. 2) Удалите в проекте файл .env с устаревшим BOT_TOKEN (он может перебить Secret). 3) Скопируйте токен кнопкой Copy, без кавычек.',
+      );
+      return false;
+    }
+    console.log(`[telegram] Токен верный, бот @${j.result?.username || '?'} (id ${j.result?.id})`);
+    return true;
+  } catch (e) {
+    console.error('[telegram] getMe не удался:', e?.message || e);
+    return false;
+  }
 }
 
 /** Пусто по умолчанию: на Replit/Render нет вашего локального диска C:\ */
@@ -227,6 +306,11 @@ function requestActionKeyboard(submissionId) {
 }
 
 async function main() {
+  const healthPort = resolveHealthCheckPort();
+  if (healthPort != null) {
+    await startHealthCheckServer(healthPort);
+  }
+
   await loadContentCache();
   const content = getContent();
   console.log(
@@ -240,7 +324,9 @@ async function main() {
   } catch (e) {
     console.warn('[telegram] deleteWebHook', e?.message || e);
   }
-  bot.startPolling();
+  if (!(await verifyTelegramBotToken(token))) {
+    process.exit(1);
+  }
 
   async function notifyManager(html) {
     const mid = process.env.MANAGER_CHAT_ID;
@@ -918,8 +1004,19 @@ async function main() {
 
   bot.on('polling_error', (err) => {
     console.error('[polling]', err.message);
+    if (String(err.message || '').includes('409')) {
+      console.error(
+        '[polling] 409: тот же BOT_TOKEN уже опрашивает Telegram (второй Repl, Deploy+Console, ПК или старый процесс). Оставьте один запуск или смените токен в @BotFather.',
+      );
+    }
+    if (String(err.message || '').includes('401')) {
+      console.error(
+        '[polling] 401: неверный BOT_TOKEN. Если при старте было «Токен верный», возможен второй процесс со старым токеном.',
+      );
+    }
   });
 
+  bot.startPolling();
   console.log('Бот запущен. Ctrl+C — остановка.');
 }
 
