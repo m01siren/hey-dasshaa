@@ -54,16 +54,45 @@ if (!isPlausibleTelegramBotToken(token)) {
   process.exit(1);
 }
 
-/** Порт для health check: Render/деплой задают PORT; на Replit иногда только REPL_ID — тогда 8080. */
+/**
+ * Порт для health check (Replit Deploy / Render и т.д.).
+ * У Replit Deploy часто нет ни PORT, ни REPL_* в env — тогда без сервера деплой пишет «open port was not detected».
+ * По умолчанию 3000 — как в шаблонах Replit (.replit localPort → externalPort 80). Иначе: HEALTH_CHECK_PORT / PORT.
+ * Отключить: DISABLE_HEALTH_PORT=1
+ */
+const DEFAULT_HEALTH_PORT = 3000;
+
 function resolveHealthCheckPort() {
+  if (process.env.DISABLE_HEALTH_PORT === '1' || process.env.DISABLE_HEALTH_PORT === 'true') {
+    return null;
+  }
+
+  const forced = Number(process.env.HEALTH_CHECK_PORT || process.env.FORCE_HTTP_PORT);
+  if (Number.isFinite(forced) && forced > 0) return forced;
+
   const n = Number(process.env.PORT);
   if (Number.isFinite(n) && n > 0) return n;
-  if (process.env.REPL_ID != null && String(process.env.REPL_ID).length > 0) {
+
+  const replitLike =
+    String(process.env.REPL_ID || '').length > 0 ||
+    String(process.env.REPLIT_DEPLOYMENT || '').length > 0 ||
+    String(process.env.REPLIT_DEV_DOMAIN || '').length > 0 ||
+    String(process.env.REPL_SLUG || '').length > 0 ||
+    String(process.env.REPLIT_DB_URL || '').length > 0 ||
+    String(process.env.REPLIT_CLUSTER || '').length > 0 ||
+    String(process.env.REPLIT_OWNER || '').length > 0;
+
+  if (replitLike) {
     const fb = Number(process.env.REPLIT_SERVER_PORT);
     if (Number.isFinite(fb) && fb > 0) return fb;
-    return 8080;
+    return DEFAULT_HEALTH_PORT;
   }
-  return null;
+
+  if (process.env.NODE_ENV === 'production') {
+    return DEFAULT_HEALTH_PORT;
+  }
+
+  return DEFAULT_HEALTH_PORT;
 }
 
 function startHealthCheckServer(port) {

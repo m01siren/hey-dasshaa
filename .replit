@@ -1,0 +1,12 @@
+# https://docs.replit.com — деплой и порты для Telegram-бота с HTTP health check
+
+run = "npm start"
+
+[deployment]
+run = ["npm", "run", "start"]
+deploymentTarget = "cloudrun"
+
+# Health check: приложение слушает 0.0.0.0:3000 (см. src/index.js). Без этого Replit часто не находит порт.
+[[ports]]
+localPort = 3000
+externalPort = 80
