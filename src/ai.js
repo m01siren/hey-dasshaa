@@ -33,6 +33,25 @@ function normalizeIntent(raw) {
   return INTENT_ALIASES[k] || '';
 }
 
+/** Для OpenAI strict json_schema: additionalProperties: false и все ключи в required. */
+const EXTRACTED_FIELD_KEYS = [
+  'service',
+  'lesson_format',
+  'preferred_time',
+  'name',
+  'phone',
+  'telegram_username',
+  'english_level',
+  'learning_goal',
+];
+
+const EXTRACTED_FIELDS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: Object.fromEntries(EXTRACTED_FIELD_KEYS.map((k) => [k, { type: 'string' }])),
+  required: [...EXTRACTED_FIELD_KEYS],
+};
+
 function buildSystemPrompt() {
   return `Ты — дружелюбный AI-ассистент Telegram-бота частного репетитора по английскому языку.
 
@@ -156,14 +175,20 @@ function buildSystemPrompt() {
 - просит только то, чего реально не хватает.
 
 ## Формат результата
-Верни строго JSON без пояснений:
+Верни строго JSON без пояснений. В extracted_fields — только строки; ключи: service, lesson_format, preferred_time, name, phone, telegram_username, english_level, learning_goal; неизвестные поля оставь пустой строкой "".
 {
   "intent": "...",
   "is_topic_switch": true/false,
   "is_gibberish": true/false,
   "extracted_fields": {
-    "service": {"value": "...", "confidence": "high|medium|low"},
-    "preferred_time": {"value": "...", "confidence": "high|medium|low"}
+    "service": "",
+    "lesson_format": "",
+    "preferred_time": "",
+    "name": "",
+    "phone": "",
+    "telegram_username": "",
+    "english_level": "",
+    "learning_goal": ""
   },
   "missing_fields": ["..."],
   "reply": "..."
@@ -391,7 +416,7 @@ export async function getAiIntentReply(userText, { content, channelUrl, sessionS
         intent: { type: 'string', enum: intentEnum },
         is_topic_switch: { type: 'boolean' },
         is_gibberish: { type: 'boolean' },
-        extracted_fields: { type: 'object', additionalProperties: true },
+        extracted_fields: EXTRACTED_FIELDS_SCHEMA,
         missing_fields: { type: 'array', items: { type: 'string' } },
         reply: { type: 'string' },
       },

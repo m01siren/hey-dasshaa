@@ -234,7 +234,13 @@ async function main() {
   );
   console.log('[content.level.ids]', content.englishLevels.map((x) => x.id));
 
-  const bot = new TelegramBot(token, { polling: true });
+  const bot = new TelegramBot(token, { polling: false });
+  try {
+    await bot.deleteWebHook({ drop_pending_updates: false });
+  } catch (e) {
+    console.warn('[telegram] deleteWebHook', e?.message || e);
+  }
+  bot.startPolling();
 
   async function notifyManager(html) {
     const mid = process.env.MANAGER_CHAT_ID;
