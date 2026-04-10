@@ -8,6 +8,31 @@ const ALLOWED_INTENTS = new Set([
   'unclear',
 ]);
 
+const INTENT_ALIASES = {
+  faq: 'faq_question',
+  question: 'faq_question',
+  info: 'faq_question',
+  general_question: 'faq_question',
+  booking: 'booking_request',
+  sign_up: 'booking_request',
+  cancel: 'reschedule_or_cancel',
+  reschedule: 'reschedule_or_cancel',
+  contact: 'contact_request',
+  teacher: 'contact_request',
+  unrelated: 'off_topic',
+  other: 'off_topic',
+  unknown: 'unclear',
+  ambiguous: 'unclear',
+};
+
+function normalizeIntent(raw) {
+  const k = String(raw || '')
+    .toLowerCase()
+    .trim();
+  if (ALLOWED_INTENTS.has(k)) return k;
+  return INTENT_ALIASES[k] || '';
+}
+
 function buildSystemPrompt() {
   return `Ты — дружелюбный AI-ассистент Telegram-бота частного репетитора по английскому языку.
 
@@ -43,7 +68,11 @@ function buildSystemPrompt() {
 - с выполнением упражнений;
 - на посторонние темы, не связанные с занятиями и записью.
 
-На такие сообщения вежливо отвечай, что бот помогает только по вопросам занятий, записи и информации о формате обучения.
+На такие сообщения intent = off_topic, вежливо ответь, что бот помогает только по занятиям, записи и формату (без перевода и разбора грамматики).
+
+## Вопросы про формат, группы, цены, расписание
+Если ответ есть в BOT_CONTEXT (услуги, уровни, пресеты времени) или в FAQ_CONTEXT — intent = faq_question, дай конкретный короткий ответ по этим данным.
+Если в данных нет точного ответа — faq_question и честно скажи, что лучше уточнить у преподавателя; не предлагай только «нажми кнопку FAQ» вместо ответа.
 
 ## Как определять смысл сообщения
 Для каждого нового сообщения:
@@ -179,9 +208,9 @@ function parseModelOutput(raw) {
   const data = parsedDirect || parsedFromFence;
   if (!data || typeof data !== 'object') return null;
 
-  const intent = String(data.intent || '').toLowerCase();
+  const intent = normalizeIntent(data.intent);
   const reply = typeof data.reply === 'string' ? data.reply.trim() : '';
-  if (!ALLOWED_INTENTS.has(intent) || !reply) return null;
+  if (!intent || !reply) return null;
 
   return {
     intent,
@@ -193,9 +222,55 @@ function parseModelOutput(raw) {
   };
 }
 
-function heuristicIntentReply(userText) {
+function findFaqAnswer(userLower, faqItems) {
+  if (!faqItems?.length) return null;
+  const t = userLower.replace(/[?!.,;:]+/g, ' ').trim();
+  for (const item of faqItems) {
+    const q = String(item.question || '').toLowerCase();
+    if (!q) continue;
+    if (t.includes(q.slice(0, Math.min(12, q.length))) || q.split(/\s+/).filter((w) => w.length > 3 && t.includes(w)).length >= 2) {
+      return String(item.answer || '').trim();
+    }
+  }
+  return null;
+}
+
+function groupFormatReply(content) {
+  const services = content?.services || [];
+  const groupish = services.filter((s) => /групп|мини|клуб|разговор/i.test(String(s.title || '')));
+  if (groupish.length) {
+    const line = groupish.map((s) => `${s.title} (${s.duration}, ${s.price})`).join('; ');
+    return `В каталоге есть формат для небольших групп: ${line}. Подробности и набор — у преподавателя, можно написать через «Связаться с преподавателем».`;
+  }
+  return 'По групповым форматам у меня нет точной строки в данных. Напишите преподавателю через «Связаться с преподавателем» — она подскажет, есть ли набор в группу.';
+}
+
+function heuristicIntentReply(userText, content) {
   const t = String(userText || '').toLowerCase();
   const has = (arr) => arr.some((x) => t.includes(x));
+
+  if (has(['переведи', 'перевод', 'translate', 'translation', 'how do you say', 'что значит ', 'переводчик'])) {
+    return {
+      intent: 'off_topic',
+      is_topic_switch: true,
+      is_gibberish: false,
+      extracted_fields: {},
+      missing_fields: [],
+      reply:
+        'Я помогаю по записи на занятия, формату и вопросам из раздела про уроки. Переводы и разбор фраз здесь не делаю — лучше спросить у преподавателя или воспользоваться переводчиком.',
+    };
+  }
+  if (has(['грамматик', 'спряжен', 'артикль', 'времена в англий', 'упражнен', 'как правильно сказать'])) {
+    return {
+      intent: 'off_topic',
+      is_topic_switch: true,
+      is_gibberish: false,
+      extracted_fields: {},
+      missing_fields: [],
+      reply:
+        'Разбор грамматики и упражнения здесь не делаю — я про запись и организацию занятий. Могу ответить по формату уроков или помочь оставить заявку.',
+    };
+  }
 
   if (has(['запис', 'пробн', 'оставить заявку', 'хочу на урок', 'хочу занят'])) {
     return {
@@ -204,7 +279,7 @@ function heuristicIntentReply(userText) {
       is_gibberish: false,
       extracted_fields: {},
       missing_fields: [],
-      reply: 'Отлично, помогу записаться на пробное. Нажмите «Записаться на пробное» или я могу начать запись прямо сейчас.',
+      reply: 'Отлично, помогу записаться. Нажмите «Записаться на урок» в меню ниже — откроется анкета.',
     };
   }
   if (has(['перенес', 'перенести', 'отмен', 'изменить заявку', 'изменить запись'])) {
@@ -227,16 +302,46 @@ function heuristicIntentReply(userText) {
       reply: 'Хорошо, помогу передать сообщение преподавателю.',
     };
   }
-  if (has(['цена', 'стоим', 'формат', 'длитель', 'урок', 'заняти', 'faq', 'канал'])) {
+
+  if (has(['групп', 'в групп', 'мини-групп', 'коллективн', 'вместе с другими'])) {
     return {
       intent: 'faq_question',
       is_topic_switch: true,
       is_gibberish: false,
       extracted_fields: {},
       missing_fields: [],
-      reply: 'Могу подсказать по занятиям и записи. Если хотите, выберите «Ответы на частые вопросы» или уточните вопрос одним сообщением.',
+      reply: groupFormatReply(content),
     };
   }
+
+  const faqHit = findFaqAnswer(t, content?.faqItems);
+  if (faqHit) {
+    return {
+      intent: 'faq_question',
+      is_topic_switch: true,
+      is_gibberish: false,
+      extracted_fields: {},
+      missing_fields: [],
+      reply: faqHit,
+    };
+  }
+
+  if (has(['цена', 'стоим', 'сколько стоит', 'формат', 'длитель', 'урок', 'заняти', 'канал', 'онлайн', 'zoom', 'meet'])) {
+    const services = content?.services?.length
+      ? content.services.map((s) => `• ${s.title} (${s.duration}, ${s.price})`).join('\n')
+      : '';
+    const extra = services ? `\n\nУслуги:\n${services}` : '';
+    return {
+      intent: 'faq_question',
+      is_topic_switch: true,
+      is_gibberish: false,
+      extracted_fields: {},
+      missing_fields: [],
+      reply:
+        `Кратко: услуги и цены — в меню «Записаться на урок», типовые вопросы — «Ответы на частые вопросы», ссылка на канал — кнопка «Канал Даши».${extra}`,
+    };
+  }
+
   if (t.replace(/[a-zа-я0-9\s]/gi, '').length > Math.max(3, t.length / 2) || t.trim().length < 2) {
     return {
       intent: 'unclear',
@@ -247,28 +352,43 @@ function heuristicIntentReply(userText) {
       reply: 'Не совсем понял ваш запрос. Можете написать чуть подробнее?',
     };
   }
+
+  if (/[a-z]{3,}/i.test(userText || '') && !/[а-яё]{2,}/i.test(userText || '')) {
+    return {
+      intent: 'off_topic',
+      is_topic_switch: true,
+      is_gibberish: false,
+      extracted_fields: {},
+      missing_fields: [],
+      reply:
+        'Пишу по-русски и помогаю по занятиям и записи. Если это был вопрос по урокам — перефразируйте по-русски; переводы и разбор английских фраз здесь не делаю.',
+    };
+  }
+
   return {
     intent: 'unclear',
     is_topic_switch: true,
     is_gibberish: false,
     extracted_fields: {},
     missing_fields: [],
-    reply: 'Уточните, пожалуйста, что именно нужно: записаться на пробное, задать вопрос по занятиям или связаться с преподавателем?',
+    reply:
+      'Могу помочь с записью на урок, ответами из частых вопросов или сообщением преподавателю — выберите пункт в меню ниже или опишите вопрос одним сообщением по-русски.',
   };
 }
 
 export async function getAiIntentReply(userText, { content, channelUrl, sessionState, draft }) {
   const key = process.env.OPENAI_API_KEY?.trim();
-  if (!key) return heuristicIntentReply(userText);
+  if (!key) return heuristicIntentReply(userText, content);
 
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const intentEnum = [...ALLOWED_INTENTS];
   const schema = {
     name: 'bot_intent_response',
     schema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        intent: { type: 'string' },
+        intent: { type: 'string', enum: intentEnum },
         is_topic_switch: { type: 'boolean' },
         is_gibberish: { type: 'boolean' },
         extracted_fields: { type: 'object', additionalProperties: true },
@@ -305,10 +425,10 @@ export async function getAiIntentReply(userText, { content, channelUrl, sessionS
   if (!res.ok) {
     const err = await res.text();
     console.error('[ai]', res.status, err);
-    return heuristicIntentReply(userText);
+    return heuristicIntentReply(userText, content);
   }
 
   const data = await res.json();
   const raw = data.choices?.[0]?.message?.content;
-  return parseModelOutput(raw) || heuristicIntentReply(userText);
+  return parseModelOutput(raw) || heuristicIntentReply(userText, content);
 }
