@@ -23,24 +23,25 @@ if (!token) {
   process.exit(1);
 }
 
-const START_PHOTO_PATH =
-  process.env.START_PHOTO_PATH ||
-  'C:\\Users\\irano\\.cursor\\projects\\c-Users-irano-OneDrive-hey-dasshaa-bot\\assets\\c__Users_irano_AppData_Roaming_Cursor_User_workspaceStorage_e00a97bad9c49fb87d5d70d92630d5f1_images_IMG_6459-0d5bcb84-22d7-4cda-9ab2-700eaa59a5db.png';
+/** Пусто по умолчанию: на Replit/Render нет вашего локального диска C:\ */
+const START_PHOTO_PATH = String(process.env.START_PHOTO_PATH || '').trim();
 
 function getValidStartPhotoPath() {
-  const p = String(START_PHOTO_PATH || '').trim();
-  if (!p) return null;
-  const ext = path.extname(p).toLowerCase();
+  if (!START_PHOTO_PATH) return null;
+  const resolved = path.isAbsolute(START_PHOTO_PATH)
+    ? START_PHOTO_PATH
+    : path.resolve(process.cwd(), START_PHOTO_PATH);
+  const ext = path.extname(resolved).toLowerCase();
   const imageExt = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
   if (!imageExt.has(ext)) {
-    console.warn(`[start.photo] START_PHOTO_PATH не является изображением: ${p}`);
+    console.warn(`[start.photo] START_PHOTO_PATH не является изображением: ${resolved}`);
     return null;
   }
-  if (!fs.existsSync(p)) {
-    console.warn(`[start.photo] Файл не найден: ${p}`);
+  if (!fs.existsSync(resolved)) {
+    console.warn(`[start.photo] Файл не найден: ${resolved}`);
     return null;
   }
-  return p;
+  return resolved;
 }
 
 function applyMainMenu(session) {
