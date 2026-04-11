@@ -1,11 +1,22 @@
-# https://docs.replit.com — деплой и порты для Telegram-бота с HTTP health check
+# https://docs.replit.com — Node для Workspace и Cloud Run
+# Исправляет проблему "node: not found" в деплое
+
+modules = ["nodejs-20"]
 
 run = "npm start"
 
+hidden = [".config", ".git", "node_modules"]
+
+[nix]
+channel = "stable-24_05"
+
 [deployment]
+# Сборка в образе: ставим зависимости, затем старт через npm
+build = ["npm", "install", "--omit=dev", "--no-audit", "--no-fund"]
 run = ["npm", "run", "start"]
 deploymentTarget = "cloudrun"
 
+# Health check: приложение слушает 0.0.0.0:3000 (см. src/index.js)
 [[ports]]
 localPort = 3000
 externalPort = 80
