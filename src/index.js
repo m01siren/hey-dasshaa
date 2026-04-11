@@ -95,20 +95,42 @@ function resolveHealthCheckPort() {
   return DEFAULT_HEALTH_PORT;
 }
 
-function startHealthCheckServer(port) {
+/** Поднимает HTTP для health check; при EADDRINUSE перебирает запасные порты. */
+function startHealthCheckServer(primaryPort) {
+  const candidates = [
+    ...new Set(
+      [primaryPort, Number(process.env.PORT), 3000, 8080, 5000].filter((p) => Number.isFinite(p) && p > 0),
+    ),
+  ];
   return new Promise((resolve, reject) => {
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'no-store',
+    let idx = 0;
+    const tryNext = () => {
+      if (idx >= candidates.length) {
+        reject(new Error(`[http] не удалось занять ни один из портов: ${candidates.join(', ')}`));
+        return;
+      }
+      const p = candidates[idx++];
+      const server = http.createServer((_req, res) => {
+        res.writeHead(200, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store',
+        });
+        res.end('ok');
       });
-      res.end('ok');
-    });
-    server.on('error', reject);
-    server.listen(port, '0.0.0.0', () => {
-      console.log(`[http] health check 0.0.0.0:${port}`);
-      resolve(server);
-    });
+      server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          console.warn(`[http] порт ${p} занят (EADDRINUSE), пробуем следующий…`);
+          tryNext();
+        } else {
+          reject(err);
+        }
+      });
+      server.listen(p, '0.0.0.0', () => {
+        console.log(`[http] health check 0.0.0.0:${p}`);
+        resolve(server);
+      });
+    };
+    tryNext();
   });
 }
 
